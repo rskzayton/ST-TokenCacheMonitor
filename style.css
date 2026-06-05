@@ -1,0 +1,330 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   CodeWhale-Style Token Monitor Panel  v2.0.0
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+#tcm-panel {
+    position: fixed;
+    right: 12px;
+    bottom: 90px;
+    width: 265px;
+    max-height: 520px;
+    background: #1a1a2e;
+    border: 1px solid #3a3a5e;
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-size: 12px;
+    color: #c8c8d0;
+    z-index: 99990;
+    user-select: none;
+    overflow: hidden;
+    transition: width 0.15s ease, height 0.15s ease;
+}
+
+#tcm-panel.tcm-collapsed {
+    width: 200px;
+    max-height: 40px;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+
+.tcm-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    background: #16213e;
+    border-bottom: 1px solid #2a2a4e;
+    cursor: move;
+    min-height: 28px;
+}
+
+.tcm-head-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.tcm-dot {
+    font-size: 10px;
+    line-height: 1;
+}
+
+.tcm-title {
+    font-weight: 600;
+    font-size: 12px;
+    color: #e0e0f0;
+    letter-spacing: 0.3px;
+}
+
+.tcm-head-btns {
+    display: flex;
+    gap: 3px;
+}
+
+.tcm-btn {
+    background: none;
+    border: 1px solid transparent;
+    color: #8888aa;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: 4px;
+    line-height: 1;
+    transition: color 0.15s, background 0.15s;
+}
+
+.tcm-btn:hover {
+    color: #d0d0ff;
+    background: rgba(255,255,255,0.08);
+    border-color: #4a4a7e;
+}
+
+/* ── Body ───────────────────────────────────────────────────────────── */
+
+.tcm-body {
+    overflow-y: auto;
+    max-height: 460px;
+    padding: 4px 0;
+}
+
+.tcm-body::-webkit-scrollbar {
+    width: 4px;
+}
+
+.tcm-body::-webkit-scrollbar-thumb {
+    background: #3a3a5e;
+    border-radius: 2px;
+}
+
+/* ── Sections ───────────────────────────────────────────────────────── */
+
+.tcm-section {
+    padding: 4px 10px;
+    border-bottom: 1px solid #222244;
+}
+
+.tcm-section-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #7a7aac;
+    margin-bottom: 4px;
+}
+
+.tcm-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 2px 0;
+}
+
+.tcm-row span:first-child {
+    color: #9898b8;
+}
+
+.tcm-row span:last-child {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-weight: 600;
+    color: #d0d0f0;
+}
+
+.tcm-green { color: #4caf50 !important; }
+.tcm-red   { color: #f44336 !important; }
+
+.tcm-cost-row span:last-child {
+    color: #ffd54f;
+}
+
+/* ── Cache Efficiency Bar ───────────────────────────────────────────── */
+
+.tcm-eff-bar {
+    height: 4px;
+    background: #2a2a4e;
+    border-radius: 2px;
+    margin-top: 4px;
+    overflow: hidden;
+}
+
+.tcm-eff-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: #4caf50;
+    border-radius: 2px;
+    transition: width 0.4s ease, background 0.4s ease;
+}
+
+/* ── Mini Trend Chart ───────────────────────────────────────────────── */
+
+.tcm-trend-container {
+    padding: 2px 0;
+}
+
+.tcm-trend-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 36px;
+    padding: 2px 0;
+}
+
+.tcm-trend-bar {
+    flex: 1;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 1px;
+    opacity: 1;
+    transition: opacity 0.2s;
+}
+
+.tcm-trend-p {
+    width: 100%;
+    background: #5a7abe;
+    border-radius: 1px 1px 0 0;
+    min-height: 1px;
+    transition: height 0.3s ease;
+}
+
+.tcm-trend-c {
+    width: 100%;
+    background: #4caf50;
+    border-radius: 1px 1px 0 0;
+    min-height: 1px;
+    transition: height 0.3s ease;
+}
+
+.tcm-trend-legend {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    font-size: 9px;
+    color: #7a7aac;
+    margin-top: 3px;
+}
+
+.tcm-legend-p, .tcm-legend-c {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    margin-right: 3px;
+    vertical-align: middle;
+}
+
+.tcm-legend-p { background: #5a7abe; }
+.tcm-legend-c { background: #4caf50; }
+
+/* ── Settings overlay ───────────────────────────────────────────────── */
+
+.tcm-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 99999;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.tcm-settings-box {
+    background: #1e1e36;
+    border: 1px solid #4a4a7e;
+    border-radius: 10px;
+    padding: 20px 24px;
+    min-width: 320px;
+    max-width: 420px;
+    color: #c8c8d0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 13px;
+}
+
+.tcm-settings-box h3 {
+    margin: 0 0 14px;
+    font-size: 15px;
+    color: #e0e0f0;
+}
+
+.tcm-settings-box label {
+    display: block;
+    margin: 8px 0;
+    cursor: pointer;
+}
+
+.tcm-settings-box input[type="checkbox"] {
+    margin-right: 8px;
+    accent-color: #5a7abe;
+}
+
+.tcm-settings-box select,
+.tcm-settings-box input[type="number"] {
+    background: #12122a;
+    border: 1px solid #3a3a5e;
+    color: #d0d0f0;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    margin-left: 4px;
+}
+
+.tcm-settings-box input[type="number"] {
+    width: 100px;
+}
+
+.tcm-settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.tcm-settings-actions button {
+    padding: 6px 14px;
+    border-radius: 5px;
+    border: 1px solid #3a3a5e;
+    background: #2a2a4e;
+    color: #d0d0f0;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.15s;
+}
+
+.tcm-settings-actions button:hover {
+    background: #3a3a6e;
+}
+
+.tcm-settings-actions button:first-child {
+    background: #3a5a8e;
+    border-color: #5a7abe;
+}
+
+.tcm-settings-actions button:first-child:hover {
+    background: #4a6aae;
+}
+
+/* ── Responsive: wider on large screens ─────────────────────────────── */
+
+@media (min-width: 1600px) {
+    #tcm-panel {
+        width: 300px;
+        max-height: 600px;
+    }
+    .tcm-body {
+        max-height: 540px;
+    }
+}
+
+/* ── High-contrast theme support ────────────────────────────────────── */
+
+@media (prefers-contrast: high) {
+    #tcm-panel {
+        border-color: #888;
+    }
+    .tcm-row span:last-child {
+        color: #fff;
+    }
+    .tcm-section-title {
+        color: #aaa;
+    }
+}
