@@ -225,7 +225,6 @@ function record(prompt, completion, cacheHit, cacheMiss, durationMs) {
     stats.requests++;
     stats.totalDuration   += stats.lastDuration;
     stats.streamingCount   = 0;
-    stats.genStartTime     = 0;  // 标记已记录，防止 GENERATION_ENDED 双重调用
 
     // Cost calculation: cache-hit tokens charged at cache rate, miss at input rate
     const p  = getPricing();
@@ -400,28 +399,47 @@ function hookEvents() {
     eventSource.on(event_types.GENERATION_ENDED, (data) => {
         const duration = stats.genStartTime ? Date.now() - stats.genStartTime : 0;
 
-        // 如果 fetch 拦截器已记录（stats.lastPrompt 已更新），跳过事件钩子
-        // 避免同一次请求被 record() 两次
-        if (stats.genStartTime === 0) {
-            // genStartTime 已被 fetch 拦截器清零 → 已记录过，跳过
-            refresh();
-            return;
+        // 尝试多个数据源获取 usage（ST 通过服务端代理发 API 请求，fetch 拦截无效）
+        let usage = null;
+
+        // 数据源 1: GENERATION_ENDED 事件携带的 usage
+        if (data?.usage?.prompt_tokens !== undefined) {
+            usage = data.usage;
         }
 
-        // If ST passes usage in the event data, use it as primary source
-        if (data?.usage?.prompt_tokens !== undefined) {
-            const u = data.usage;
-            record(
-                u.prompt_tokens || 0,
-                u.completion_tokens || stats.streamingCount,
-                u.prompt_cache_hit_tokens || 0,
-                u.prompt_cache_miss_tokens !== undefined
-                    ? u.prompt_cache_miss_tokens
-                    : Math.max(0, (u.prompt_tokens || 0) - (u.prompt_cache_hit_tokens || 0)),
-                duration
-            );
+        // 数据源 2: getContext().generateRawData() 返回完整 API 响应
+        if (!usage) {
+            try {
+                const ctx = getContext();
+                if (typeof ctx.generateRawData === 'function') {
+                    const raw = ctx.generateRawData();
+                    if (raw?.usage?.prompt_tokens !== undefined) {
+                        usage = raw.usage;
+                    } else if (raw?.response?.usage?.prompt_tokens !== undefined) {
+                        usage = raw.response.usage;
+                    }
+                }
+            } catch { /* ignore */ }
+        }
+
+        if (usage) {
+            const pt = usage.prompt_tokens || usage.input_tokens || 0;
+            const ct = usage.completion_tokens || usage.output_tokens || stats.streamingCount;
+
+            // DeepSeek 专用字段
+            const ch = usage.prompt_cache_hit_tokens
+                || usage.cache_read_input_tokens
+                || (usage.prompt_tokens_details?.cached_tokens)
+                || 0;
+            const cm = usage.prompt_cache_miss_tokens !== undefined
+                ? usage.prompt_cache_miss_tokens
+                : (usage.cache_read_input_tokens !== undefined
+                    ? Math.max(0, pt - ch)
+                    : Math.max(0, pt - ch));
+
+            record(pt, ct, ch, cm, duration);
         } else if (stats.streamingCount > 0 && stats.lastCompletion === 0) {
-            // Fallback: use stream token count (no usage data captured)
+            // Fallback: 用流式 token 数估算
             const p = getPricing();
             stats.lastCompletion = stats.streamingCount;
             stats.totalCompletion += stats.streamingCount;
