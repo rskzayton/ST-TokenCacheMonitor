@@ -57,27 +57,6 @@ const PRICING = {
     'gpt-4o-mini':       { input: 0.73, cacheHit: 0.073, output: 3.64 },
 };
 
-/** URL substrings that identify AI API endpoints */
-const API_PATTERNS = [
-    '/chat/completions',
-    '/completions',
-    '/v1/chat/completions',
-    '/v1/completions',
-    'api.deepseek.com',
-    'api.openai.com',
-    'api.anthropic.com',
-    'generativelanguage.googleapis.com',
-];
-
-/** DeepSeek-specific usage fields we want to capture */
-const DS_CACHE_FIELDS = [
-    'prompt_cache_hit_tokens',
-    'prompt_cache_miss_tokens',
-    'prompt_cache_write_tokens',
-    'prompt_tokens_details',
-    'completion_tokens_details',
-];
-
 // ═══════════════════════════════════════════════════════════════════════════
 // State
 // ═══════════════════════════════════════════════════════════════════════════
@@ -255,128 +234,6 @@ function record(prompt, completion, cacheHit, cacheMiss, durationMs) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Network interception (fetch monkey-patch)
-// ═══════════════════════════════════════════════════════════════════════════
-
-function matchesAPI(url) {
-    if (!url) return false;
-    return API_PATTERNS.some(p => url.includes(p));
-}
-
-function extractUsage(data) {
-    if (!data) return null;
-    // OpenAI / DeepSeek
-    if (data?.usage?.prompt_tokens !== undefined) return data.usage;
-    // Anthropic
-    if (data?.usage?.input_tokens !== undefined) {
-        const u = data.usage;
-        return {
-            prompt_tokens: u.input_tokens,
-            completion_tokens: u.output_tokens,
-            prompt_cache_hit_tokens: u.cache_read_input_tokens || 0,
-            prompt_cache_write_tokens: u.cache_creation_input_tokens || 0,
-        };
-    }
-    // Gemini
-    if (data?.usageMetadata) {
-        const u = data.usageMetadata;
-        return {
-            prompt_tokens: u.promptTokenCount,
-            completion_tokens: u.candidatesTokenCount,
-        };
-    }
-    return null;
-}
-
-/** Read SSE stream to extract usage from the final chunk */
-async function interceptStream(response) {
-    const reader = response.clone().body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    let usage = null;
-
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
-
-            const lines = buf.split('\n');
-            buf = lines.pop() || '';
-
-            for (const line of lines) {
-                const data = line.startsWith('data: ') ? line.slice(6).trim() : '';
-                if (!data || data === '[DONE]') continue;
-                try {
-                    const chunk = JSON.parse(data);
-                    if (chunk.usage) usage = chunk.usage;
-                    // OpenAI streaming: usage may be nested
-                    if (chunk.choices?.[0]?.usage) usage = chunk.choices[0].usage;
-                    // DeepSeek: sometimes usage is at top level
-                    if (chunk.usage?.prompt_tokens !== undefined) usage = chunk.usage;
-                } catch { /* ignore parse errors */ }
-            }
-        }
-        // Flush remaining
-        if (buf.startsWith('data: ') && buf.slice(6).trim() !== '[DONE]') {
-            try {
-                const chunk = JSON.parse(buf.slice(6).trim());
-                if (chunk.usage) usage = chunk.usage;
-            } catch { /* ignore */ }
-        }
-    } catch { /* stream read error — non-fatal */ }
-
-    return usage;
-}
-
-function patchFetch() {
-    const _fetch = window.fetch;
-    window.fetch = async function (...args) {
-        const url = typeof args[0] === 'string'
-            ? args[0]
-            : args[0]?.url || '';
-
-        const resp = await _fetch.apply(this, args);
-
-        if (!matchesAPI(url)) return resp;
-
-        // Fire and forget — don't block the response
-        (async () => {
-            try {
-                const ct = resp.headers.get('content-type') || '';
-
-                if (ct.includes('text/event-stream')) {
-                    const usage = await interceptStream(resp);
-                    if (usage) {
-                        const pt = usage.prompt_tokens || 0;
-                        const ct2 = usage.completion_tokens || 0;
-                        const ch = usage.prompt_cache_hit_tokens || 0;
-                        const cm = usage.prompt_cache_miss_tokens !== undefined
-                            ? usage.prompt_cache_miss_tokens
-                            : Math.max(0, pt - ch);
-                        record(pt, ct2, ch, cm);
-                    }
-                } else {
-                    const clone = resp.clone();
-                    const data  = await clone.json().catch(() => null);
-                    const usage = extractUsage(data);
-                    if (usage) {
-                        const pt = usage.prompt_tokens || 0;
-                        const ct2 = usage.completion_tokens || 0;
-                        const ch = usage.prompt_cache_hit_tokens || 0;
-                        const cm = usage.prompt_cache_miss_tokens !== undefined
-                            ? usage.prompt_cache_miss_tokens
-                            : Math.max(0, pt - ch);
-                        record(pt, ct2, ch, cm);
-                    }
-                }
-            } catch { /* silently ignore — best-effort tracking */ }
-        })();
-
-        return resp;
-    };
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // ST Event hooks
 // ═══════════════════════════════════════════════════════════════════════════
@@ -394,37 +251,39 @@ function hookEvents() {
         if (stats.streamingCount % 5 === 0) refresh();
     });
 
-    eventSource.on(event_types.GENERATION_ENDED, async (data) => {
+    // MESSAGE_RECEIVED: 最可靠的数据源，消息的 .usage 字段包含 API 完整返回
+    eventSource.on(event_types.MESSAGE_RECEIVED, async (data) => {
         const duration = stats.genStartTime ? Date.now() - stats.genStartTime : 0;
 
         let usage = null;
 
-        // 数据源 1: GENERATION_ENDED 事件携带的 usage
-        if (data?.usage?.prompt_tokens !== undefined) {
-            usage = data.usage;
+        // 数据源 1: 消息对象自带的 usage（最可靠，含缓存字段）
+        try {
+            const ctx = getContext();
+            const lastMsg = ctx?.chat?.[ctx.chat.length - 1];
+            if (lastMsg?.usage?.prompt_tokens !== undefined) {
+                usage = lastMsg.usage;
+            }
+        } catch { /* ignore */ }
+
+        // 数据源 2: context.getChatCompletionUsage()（ST 1.12+ 新增 API）
+        if (!usage) {
+            try {
+                const ctx = getContext();
+                if (typeof ctx.getChatCompletionUsage === 'function') {
+                    const u = await ctx.getChatCompletionUsage();
+                    if (u?.prompt_tokens !== undefined) usage = u;
+                }
+            } catch { /* ignore */ }
         }
 
-        // 数据源 2: getContext().generateRawData()（异步，必须 await）
+        // 数据源 3: generateRawData() 回退
         if (!usage) {
             try {
                 const ctx = getContext();
                 if (typeof ctx.generateRawData === 'function') {
                     const raw = await ctx.generateRawData();
-                    if (raw?.usage?.prompt_tokens !== undefined) {
-                        usage = raw.usage;
-                    } else if (raw?.response?.usage?.prompt_tokens !== undefined) {
-                        usage = raw.response.usage;
-                    }
-                }
-            } catch { /* ignore */ }
-        }
-
-        // 数据源 3: ST 内部 main_api 最后响应
-        if (!usage) {
-            try {
-                const { main_api } = await import('../../../../script.js');
-                if (main_api?.lastResponse?.usage?.prompt_tokens !== undefined) {
-                    usage = main_api.lastResponse.usage;
+                    if (raw?.usage?.prompt_tokens !== undefined) usage = raw.usage;
                 }
             } catch { /* ignore */ }
         }
@@ -444,7 +303,6 @@ function hookEvents() {
 
             record(pt, ct, ch, cm, duration);
         } else if (stats.streamingCount > 0 && stats.lastCompletion === 0) {
-            // Fallback: 用流式 token 数估算
             const p = getPricing();
             stats.lastCompletion = stats.streamingCount;
             stats.totalCompletion += stats.streamingCount;
@@ -1000,7 +858,6 @@ function init() {
     // 初始化当前对话 ID
     try { _currentChatId = getContext()?.name2 || 'default'; } catch { _currentChatId = 'default'; }
     loadSession();
-    patchFetch();
     hookEvents();
     createUI();
     addSettingsButton();

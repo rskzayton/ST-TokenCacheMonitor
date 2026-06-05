@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "rskzayton",
-    "version": "3.0.0",
+    "version": "3.1.0",
     "homePage": "https://github.com/rskzayton/ST-TokenCacheMonitor",
     "auto_update": true,
     "description": "SillyTavern Token 监控面板：实时用量、缓存命中率、人民币成本估算、吞吐量追踪、每个对话独立存储。支持 DeepSeek/Claude/GPT。"
