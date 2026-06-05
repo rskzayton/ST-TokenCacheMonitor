@@ -396,46 +396,76 @@ function hookEvents() {
         if (stats.streamingCount % 5 === 0) refresh();
     });
 
-    eventSource.on(event_types.GENERATION_ENDED, (data) => {
+    eventSource.on(event_types.GENERATION_ENDED, async (data) => {
         const duration = stats.genStartTime ? Date.now() - stats.genStartTime : 0;
 
         // 尝试多个数据源获取 usage（ST 通过服务端代理发 API 请求，fetch 拦截无效）
         let usage = null;
+        let debugSource = 'none';
 
         // 数据源 1: GENERATION_ENDED 事件携带的 usage
         if (data?.usage?.prompt_tokens !== undefined) {
             usage = data.usage;
+            debugSource = 'event';
         }
 
-        // 数据源 2: getContext().generateRawData() 返回完整 API 响应
+        // 数据源 2: getContext().generateRawData() — 异步，必须 await
         if (!usage) {
             try {
                 const ctx = getContext();
                 if (typeof ctx.generateRawData === 'function') {
-                    const raw = ctx.generateRawData();
+                    const raw = await ctx.generateRawData();
                     if (raw?.usage?.prompt_tokens !== undefined) {
                         usage = raw.usage;
+                        debugSource = 'generateRawData';
                     } else if (raw?.response?.usage?.prompt_tokens !== undefined) {
                         usage = raw.response.usage;
+                        debugSource = 'generateRawData.response';
                     }
                 }
             } catch { /* ignore */ }
+        }
+
+        // 数据源 3: ST 内部 main_api 最后响应
+        if (!usage) {
+            try {
+                const { main_api } = await import('../../../../script.js');
+                if (main_api?.lastResponse?.usage?.prompt_tokens !== undefined) {
+                    usage = main_api.lastResponse.usage;
+                    debugSource = 'main_api';
+                }
+            } catch { /* ignore */ }
+        }
+
+        // Debug: 首次几次请求打印原始数据，帮助排查
+        if (stats.requests < 3 && !usage) {
+            console.log('[TokenCacheMonitor] DEBUG GENERATION_ENDED', {
+                hasEventUsage: !!data?.usage,
+                eventKeys: data ? Object.keys(data).slice(0, 10) : [],
+                hasGenerateRawData: typeof getContext().generateRawData === 'function',
+                rawSample: (() => {
+                    try { const r = getContext().generateRawData(); return r ? 'has_result' : 'null'; } catch { return 'error'; }
+                })(),
+            });
         }
 
         if (usage) {
             const pt = usage.prompt_tokens || usage.input_tokens || 0;
             const ct = usage.completion_tokens || usage.output_tokens || stats.streamingCount;
 
-            // DeepSeek 专用字段
+            // 支持 DeepSeek / Anthropic / OpenAI 三种缓存字段
             const ch = usage.prompt_cache_hit_tokens
                 || usage.cache_read_input_tokens
                 || (usage.prompt_tokens_details?.cached_tokens)
                 || 0;
             const cm = usage.prompt_cache_miss_tokens !== undefined
                 ? usage.prompt_cache_miss_tokens
-                : (usage.cache_read_input_tokens !== undefined
-                    ? Math.max(0, pt - ch)
-                    : Math.max(0, pt - ch));
+                : Math.max(0, pt - ch);
+
+            // Debug: 打印前几次的关键字段
+            if (stats.requests < 3) {
+                console.log(`[TokenCacheMonitor] usage from ${debugSource}`, { pt, ct, ch, cm, keys: Object.keys(usage) });
+            }
 
             record(pt, ct, ch, cm, duration);
         } else if (stats.streamingCount > 0 && stats.lastCompletion === 0) {
