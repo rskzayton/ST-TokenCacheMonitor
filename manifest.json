@@ -1,13 +1,13 @@
 {
-    "display_name": "CodeWhale 风格 Token 统计与分析",
+    "display_name": "Token 统计监控",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "CodeWhale",
-    "version": "2.0.3",
+    "author": "rskzayton",
+    "version": "3.0.0",
     "homePage": "https://github.com/rskzayton/ST-TokenCacheMonitor",
     "auto_update": true,
-    "description": "CodeWhale 同款 Token 统计面板：实时用量、缓存命中/未命中、成本估算、吞吐量追踪、会话持久化、趋势分析。专为 DeepSeek V3/V4 优化，支持 OpenAI/Anthropic/Gemini。"
+    "description": "SillyTavern Token 监控面板：实时用量、缓存命中率、人民币成本估算、吞吐量追踪、每个对话独立存储。支持 DeepSeek/Claude/GPT。"
 }

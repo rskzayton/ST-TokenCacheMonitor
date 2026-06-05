@@ -1,24 +1,20 @@
 /**
- * CodeWhale-Style Token & Cache Monitor for SillyTavern  v2.0.0
+ * Token 统计监控 for SillyTavern  v3.0.0
  * ====================================================================
  *
- * 将 CodeWhale 终端中的 token 统计体验带入 SillyTavern：
- *   - 实时 token 用量（prompt / completion / total）
- *   - DeepSeek 缓存命中/未命中统计 + 命中率可视化
- *   - 成本估算（支持 DeepSeek V4 Pro/Flash/V3 及自定义定价）
+ * 综合 CodeWhale + ST-Statistics + rskzayton 方案的中文 Token 监控面板：
+ *   - 实时 token 用量（输入 / 输出 / 合计）
+ *   - 缓存命中/未命中统计 + 命中率可视化（支持 DeepSeek / Anthropic / OpenAI）
+ *   - 人民币成本估算（支持 DeepSeek V4/Claude/GPT 多模型定价）
  *   - 吞吐量追踪（tokens/秒）
  *   - 缓存效率评分（0-100，颜色编码）
- *   - 会话持久化（localStorage，刷新不丢失）
+ *   - 每个对话独立存储（localStorage，切换不丢失）
  *   - 迷你趋势图（最近 20 次请求的 token 变化）
- *   - 成本预估（按当前速率推算）
- *   - STscript 命令：/token-stats, /token-reset, /token-export
+ *   - STscript 命令：/token-stats, /token-reset
  *   - 可拖拽、可折叠浮动面板
  *
- * 安装：将整个文件夹复制到 SillyTavern/public/scripts/extensions/
- *   或在 ST 扩展管理器中粘贴 GitHub 仓库 URL。
- *
- * 基于 CodeWhale (github.com/usewhale/DeepSeek-Code-Whale) 的
- * token 统计与分析功能设计。
+ * 安装：在 ST 扩展管理器中粘贴 GitHub 仓库 URL 即可。
+ *   https://github.com/rskzayton/ST-TokenCacheMonitor
  */
 
 import {
@@ -51,12 +47,14 @@ function getChatKey() {
 /** Pricing per 1M tokens (USD), updated 2026-06.
  *  DeepSeek cache pricing: https://api-docs.deepseek.com/quick_start/pricing */
 const PRICING = {
-    'deepseek-v4-pro':   { input: 0.55, cacheHit: 0.14,  output: 2.19 },
-    'deepseek-v4-flash': { input: 0.14, cacheHit: 0.0028, output: 0.28 },
-    'deepseek-v3':       { input: 0.27, cacheHit: 0.07,  output: 1.10 },
-    // common fallbacks
-    'gpt-4o':            { input: 2.50, cacheHit: 1.25,  output: 10.00 },
-    'claude-3.5-sonnet': { input: 3.00, cacheHit: 0.30,  output: 15.00 },
+    'deepseek-v4-pro':   { input: 3.13, cacheHit: 0.026, output: 6.26 },
+    'deepseek-v4-flash': { input: 1.01, cacheHit: 0.020, output: 2.02 },
+    'deepseek-v3':       { input: 1.0,  cacheHit: 0.1,   output: 2.0  },
+    'deepseek-r1':       { input: 4.0,  cacheHit: 1.0,   output: 16.0 },
+    'claude-sonnet-4':   { input: 10.9, cacheHit: 1.09,  output: 54.5 },
+    'claude-haiku-4-5':  { input: 0.73, cacheHit: 0.073, output: 3.64 },
+    'gpt-4o':            { input: 18.2, cacheHit: 1.82,  output: 72.7 },
+    'gpt-4o-mini':       { input: 0.73, cacheHit: 0.073, output: 3.64 },
 };
 
 /** URL substrings that identify AI API endpoints */
@@ -522,10 +520,10 @@ function projectedCost(remainingMsgs = 50) {
 
 /** Cache efficiency label */
 function effLabel(score) {
-    if (score >= 80) return { text: 'Excellent', color: '#4caf50' };
-    if (score >= 50) return { text: 'Good',     color: '#8bc34a' };
-    if (score >= 30) return { text: 'Fair',     color: '#ff9800' };
-    return              { text: 'Low',       color: '#f44336' };
+    if (score >= 80) return { text: '优秀', color: '#4caf50' };
+    if (score >= 50) return { text: '良好', color: '#8bc34a' };
+    if (score >= 30) return { text: '一般', color: '#ff9800' };
+    return              { text: '较低', color: '#f44336' };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -538,16 +536,21 @@ let dragging = false, dX = 0, dY = 0;
 function $(sel) { return root?.querySelector(sel); }
 function $$(sel) { return root?.querySelectorAll(sel); }
 
+// 中文紧凑格式: 1.2万, 345.6万, 1.0亿
 function fmt(n) {
     if (n === undefined || n === null || isNaN(n)) return '-';
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-    if (n >= 1_000)    return (n / 1_000).toFixed(1) + 'k';
+    if (n >= 1_0000_0000) return (n / 1_0000_0000).toFixed(1) + '亿';
+    if (n >= 1_0000)      return (n / 1_0000).toFixed(1) + '万';
+    if (n >= 1000)        return n.toLocaleString();
     return String(Math.round(n));
 }
 
+// 人民币格式
 function fmtCost(n) {
-    if (n === undefined || n === null || isNaN(n)) return '$0.00000';
-    return '$' + n.toFixed(5);
+    if (n === undefined || n === null || isNaN(n)) return '¥0.0000';
+    if (n >= 1)       return '¥' + n.toFixed(2);
+    if (n >= 0.01)    return '¥' + n.toFixed(4);
+    return '¥' + n.toFixed(6);
 }
 
 function render() {
@@ -569,7 +572,7 @@ function render() {
     setText('tcm-completion',  fmt(stats.lastCompletion + stats.streamingCount));
     setText('tcm-total',       fmt(lastTotal));
     setText('tcm-tps',         stats.lastDuration > 0
-        ? Math.round((stats.lastCompletion || stats.streamingCount) / (stats.lastDuration / 1000)) + ' tok/s'
+        ? Math.round((stats.lastCompletion || stats.streamingCount) / (stats.lastDuration / 1000)) + ' tok/秒'
         : '-');
 
     // Cache
@@ -586,7 +589,7 @@ function render() {
     setText('tcm-ses-total',   fmt(sessionTotal));
     setText('tcm-ses-req',     stats.requests);
     setText('tcm-ses-avg',     fmt(avgTokensPerRequest()));
-    setText('tcm-ses-tps',     tps > 0 ? tps + ' tok/s' : '-');
+    setText('tcm-ses-tps',     tps > 0 ? tps + ' tok/秒' : '-');
 
     // Cost
     setText('tcm-cost',        fmtCost(stats.cost));
@@ -610,7 +613,7 @@ function render() {
     const dot = $('#tcm-dot');
     if (dot) {
         dot.textContent = generating ? '🟢' : '⚪';
-        dot.title = generating ? `Generating (${stats.streamingCount} tokens, ${tps || '?'} tok/s)...` : 'Idle';
+        dot.title = generating ? `生成中 (${stats.streamingCount} tokens, ${tps || '?'} tok/秒)...` : '空闲';
     }
 
     // Trend mini-chart
@@ -646,7 +649,7 @@ function drawTrend() {
             const cH = (item.completion / max) * 100;
             bar.querySelector('.tcm-trend-p').style.height = pH + '%';
             bar.querySelector('.tcm-trend-c').style.height = cH + '%';
-            bar.title = `Req #${stats.requests - hItems.length + i + 1}: P=${fmt(item.prompt)} C=${fmt(item.completion)} @ ${item.tps} tok/s`;
+            bar.title = `Req #${stats.requests - hItems.length + i + 1}: P=${fmt(item.prompt)} C=${fmt(item.completion)} @ ${item.tps} tok/秒`;
             bar.style.opacity = '1';
         } else {
             bar.querySelector('.tcm-trend-p').style.height = '0%';
@@ -662,59 +665,59 @@ const PANEL_HTML = /* html */ `
 <div id="tcm-panel" class="tcm-panel${cfg.panelCollapsed ? ' tcm-collapsed' : ''}">
   <div class="tcm-head">
     <span class="tcm-head-left">
-      <span id="tcm-dot" class="tcm-dot" title="Idle">⚪</span>
-      <span class="tcm-title">🐋 Token Monitor</span>
+      <span id="tcm-dot" class="tcm-dot" title="空闲">⚪</span>
+      <span class="tcm-title">🐋 Token 监控</span>
     </span>
     <span class="tcm-head-btns">
-      <button class="tcm-btn" id="tcm-btn-toggle" title="Collapse">${cfg.panelCollapsed ? '➕' : '➖'}</button>
-      <button class="tcm-btn" id="tcm-btn-reset"  title="Reset all stats">↺</button>
-      <button class="tcm-btn" id="tcm-btn-close"  title="Close panel">✕</button>
+      <button class="tcm-btn" id="tcm-btn-toggle" title="折叠">${cfg.panelCollapsed ? '➕' : '➖'}</button>
+      <button class="tcm-btn" id="tcm-btn-reset"  title="重置统计">↺</button>
+      <button class="tcm-btn" id="tcm-btn-close"  title="关闭面板">✕</button>
     </span>
   </div>
   <div class="tcm-body"${cfg.panelCollapsed ? ' style="display:none"' : ''}>
-    <!-- Last Request -->
+    <!-- 本次请求 -->
     <div class="tcm-section">
-      <div class="tcm-section-title">▼ Last Request</div>
-      <div class="tcm-row"><span>Prompt</span><span id="tcm-prompt">-</span></div>
-      <div class="tcm-row"><span>Completion</span><span id="tcm-completion">-</span></div>
-      <div class="tcm-row"><span>Total</span><span id="tcm-total">-</span></div>
-      <div class="tcm-row" id="tcm-tps-row"><span>Speed</span><span id="tcm-tps">-</span></div>
+      <div class="tcm-section-title">▼ 本次请求</div>
+      <div class="tcm-row"><span>输入</span><span id="tcm-prompt">-</span></div>
+      <div class="tcm-row"><span>输出</span><span id="tcm-completion">-</span></div>
+      <div class="tcm-row"><span>合计</span><span id="tcm-total">-</span></div>
+      <div class="tcm-row" id="tcm-tps-row"><span>速度</span><span id="tcm-tps">-</span></div>
     </div>
 
-    <!-- Cache Info -->
+    <!-- 缓存信息 -->
     <div class="tcm-section" id="tcm-cache-section"${cfg.showCacheInfo ? '' : ' style="display:none"'}>
-      <div class="tcm-section-title">▼ Cache (DeepSeek)</div>
-      <div class="tcm-row"><span>Hit</span><span class="tcm-green" id="tcm-ch-hit">-</span></div>
-      <div class="tcm-row"><span>Miss</span><span class="tcm-red" id="tcm-ch-miss">-</span></div>
-      <div class="tcm-row"><span>Hit Rate</span><span id="tcm-ch-rate">-</span></div>
+      <div class="tcm-section-title">▼ 缓存命中</div>
+      <div class="tcm-row"><span>命中</span><span class="tcm-green" id="tcm-ch-hit">-</span></div>
+      <div class="tcm-row"><span>未命中</span><span class="tcm-red" id="tcm-ch-miss">-</span></div>
+      <div class="tcm-row"><span>命中率</span><span id="tcm-ch-rate">-</span></div>
       <div class="tcm-row" style="margin-top:4px">
-        <span>Efficiency</span>
+        <span>效率评分</span>
         <span><span id="tcm-eff-score" style="font-weight:700">0</span> <span id="tcm-eff-label" style="font-size:10px">-</span></span>
       </div>
       <div class="tcm-eff-bar"><div class="tcm-eff-bar-fill" id="tcm-eff-bar-fill"></div></div>
     </div>
 
-    <!-- Session Stats -->
+    <!-- 会话统计 -->
     <div class="tcm-section" id="tcm-session-section"${cfg.showSession ? '' : ' style="display:none"'}>
-      <div class="tcm-section-title">▼ Session</div>
-      <div class="tcm-row"><span>Prompt</span><span id="tcm-ses-prompt">0</span></div>
-      <div class="tcm-row"><span>Completion</span><span id="tcm-ses-compl">0</span></div>
-      <div class="tcm-row"><span>Total</span><span id="tcm-ses-total">0</span></div>
-      <div class="tcm-row"><span>Requests</span><span id="tcm-ses-req">0</span></div>
-      <div class="tcm-row"><span>Avg/Req</span><span id="tcm-ses-avg">0</span></div>
-      <div class="tcm-row"><span>Avg Speed</span><span id="tcm-ses-tps">-</span></div>
+      <div class="tcm-section-title">▼ 会话统计</div>
+      <div class="tcm-row"><span>输入</span><span id="tcm-ses-prompt">0</span></div>
+      <div class="tcm-row"><span>输出</span><span id="tcm-ses-compl">0</span></div>
+      <div class="tcm-row"><span>合计</span><span id="tcm-ses-total">0</span></div>
+      <div class="tcm-row"><span>请求数</span><span id="tcm-ses-req">0</span></div>
+      <div class="tcm-row"><span>平均/请求</span><span id="tcm-ses-avg">0</span></div>
+      <div class="tcm-row"><span>平均速度</span><span id="tcm-ses-tps">-</span></div>
     </div>
 
-    <!-- Cost -->
+    <!-- 费用 -->
     <div class="tcm-section" id="tcm-cost-section"${cfg.showCost ? '' : ' style="display:none"'}>
-      <div class="tcm-section-title">▼ Cost · <span id="tcm-model">-</span></div>
-      <div class="tcm-row tcm-cost-row"><span>Session</span><span id="tcm-cost">$0.00000</span></div>
-      <div class="tcm-row tcm-cost-row"><span>Proj. +50 msg</span><span id="tcm-cost-proj">$0.00000</span></div>
+      <div class="tcm-section-title">▼ 费用 · <span id="tcm-model">-</span></div>
+      <div class="tcm-row tcm-cost-row"><span>本次会话</span><span id="tcm-cost">¥0.0000</span></div>
+      <div class="tcm-row tcm-cost-row"><span>预计 +50条</span><span id="tcm-cost-proj">¥0.0000</span></div>
     </div>
 
-    <!-- Mini Trend -->
+    <!-- 趋势图 -->
     <div class="tcm-section" id="tcm-trend-section"${cfg.showTrend ? '' : ' style="display:none"'}>
-      <div class="tcm-section-title">▼ Trend (last ${MAX_HISTORY})</div>
+      <div class="tcm-section-title">▼ 趋势 (最近 ${MAX_HISTORY} 次)</div>
       <div class="tcm-trend-container">
         <div class="tcm-trend-bars" id="tcm-trend-bars">
           ${Array.from({length: MAX_HISTORY}, () => `
@@ -725,8 +728,8 @@ const PANEL_HTML = /* html */ `
           `).join('')}
         </div>
         <div class="tcm-trend-legend">
-          <span><span class="tcm-legend-p"></span>Prompt</span>
-          <span><span class="tcm-legend-c"></span>Completion</span>
+          <span><span class="tcm-legend-p"></span>输入</span>
+          <span><span class="tcm-legend-c"></span>输出</span>
         </div>
       </div>
     </div>
@@ -859,28 +862,28 @@ function openSettings() {
     overlay.className = 'tcm-overlay';
     overlay.innerHTML = /* html */ `
     <div class="tcm-settings-box">
-      <h3>🐋 Token Monitor Settings</h3>
-      <label><input type="checkbox" id="tcm-set-cache" ${cfg.showCacheInfo ? 'checked' : ''}> Show cache section</label>
-      <label><input type="checkbox" id="tcm-set-session" ${cfg.showSession ? 'checked' : ''}> Show session stats</label>
-      <label><input type="checkbox" id="tcm-set-cost" ${cfg.showCost ? 'checked' : ''}> Show cost estimate</label>
-      <label><input type="checkbox" id="tcm-set-tput" ${cfg.showThroughput ? 'checked' : ''}> Show throughput (tok/s)</label>
-      <label><input type="checkbox" id="tcm-set-trend" ${cfg.showTrend ? 'checked' : ''}> Show mini trend chart</label>
-      <label>Model: <select id="tcm-set-model">
+      <h3>🐋 Token 监控设置</h3>
+      <label><input type="checkbox" id="tcm-set-cache" ${cfg.showCacheInfo ? 'checked' : ''}> 显示缓存命中区域</label>
+      <label><input type="checkbox" id="tcm-set-session" ${cfg.showSession ? 'checked' : ''}> 显示会话统计</label>
+      <label><input type="checkbox" id="tcm-set-cost" ${cfg.showCost ? 'checked' : ''}> 显示费用估算</label>
+      <label><input type="checkbox" id="tcm-set-tput" ${cfg.showThroughput ? 'checked' : ''}> 显示吞吐量 (tok/秒)</label>
+      <label><input type="checkbox" id="tcm-set-trend" ${cfg.showTrend ? 'checked' : ''}> 显示迷你趋势图</label>
+      <label>模型: <select id="tcm-set-model">
         <option value="deepseek-v4-pro" ${cfg.costModel === 'deepseek-v4-pro' ? 'selected' : ''}>DeepSeek V4 Pro</option>
         <option value="deepseek-v4-flash" ${cfg.costModel === 'deepseek-v4-flash' ? 'selected' : ''}>DeepSeek V4 Flash</option>
         <option value="deepseek-v3" ${cfg.costModel === 'deepseek-v3' ? 'selected' : ''}>DeepSeek V3</option>
         <option value="gpt-4o" ${cfg.costModel === 'gpt-4o' ? 'selected' : ''}>GPT-4o</option>
-        <option value="claude-3.5-sonnet" ${cfg.costModel === 'claude-3.5-sonnet' ? 'selected' : ''}>Claude 3.5 Sonnet</option>
-        <option value="custom" ${cfg.costModel === 'custom' ? 'selected' : ''}>Custom</option>
+        <option value="claude-3.5-sonnet" ${cfg.costModel === 'claude-3.5-sonnet' ? 'selected' : ''}>Claude Sonnet 4</option>
+        <option value="custom" ${cfg.costModel === 'custom' ? 'selected' : ''}>自定义</option>
       </select></label>
       <div id="tcm-custom-block" style="display:${cfg.costModel === 'custom' ? 'block' : 'none'}">
-        <label>Input $/M: <input type="number" id="tcm-set-in"  value="${cfg.customPricing.input}" step="0.0001" min="0"></label>
-        <label>Cache $/M: <input type="number" id="tcm-set-ch"  value="${cfg.customPricing.cacheHit}" step="0.0001" min="0"></label>
-        <label>Output $/M: <input type="number" id="tcm-set-out" value="${cfg.customPricing.output}" step="0.0001" min="0"></label>
+        <label>输入 ¥/百万: <input type="number" id="tcm-set-in"  value="${cfg.customPricing.input}" step="0.0001" min="0"></label>
+        <label>缓存 ¥/百万: <input type="number" id="tcm-set-ch"  value="${cfg.customPricing.cacheHit}" step="0.0001" min="0"></label>
+        <label>输出 ¥/百万: <input type="number" id="tcm-set-out" value="${cfg.customPricing.output}" step="0.0001" min="0"></label>
       </div>
       <div class="tcm-settings-actions">
-        <button id="tcm-set-apply">Apply</button>
-        <button id="tcm-set-dismiss">Close</button>
+        <button id="tcm-set-apply">应用</button>
+        <button id="tcm-set-dismiss">关闭</button>
       </div>
     </div>`;
 
@@ -920,7 +923,7 @@ function addSettingsButton() {
     btn.className = 'tcm-btn';
     btn.id = 'tcm-btn-settings';
     btn.textContent = '⚙';
-    btn.title = 'Settings';
+    btn.title = '设置';
     btn.addEventListener('click', openSettings);
     const headBtns = root.querySelector('.tcm-head-btns');
     if (headBtns) headBtns.insertBefore(btn, headBtns.firstChild);
@@ -945,24 +948,24 @@ function registerSlashCommands() {
             const msg = [
                 `🐋 **Token Monitor Stats**`,
                 ``,
-                `**Session:**`,
-                `• Requests: ${stats.requests}`,
-                `• Prompt tokens: ${fmt(stats.totalPrompt)}`,
-                `• Completion tokens: ${fmt(stats.totalCompletion)}`,
-                `• Total tokens: ${fmt(stats.totalPrompt + stats.totalCompletion)}`,
-                `• Avg per request: ${fmt(avgTokensPerRequest())}`,
+                `**会话统计:**`,
+                `• 请求数: ${stats.requests}`,
+                `• 输入 tokens: ${fmt(stats.totalPrompt)}`,
+                `• 输出 tokens: ${fmt(stats.totalCompletion)}`,
+                `• 合计 tokens: ${fmt(stats.totalPrompt + stats.totalCompletion)}`,
+                `• 平均/请求: ${fmt(avgTokensPerRequest())}`,
                 ``,
-                `**Cache (DeepSeek):**`,
-                `• Hit: ${fmt(stats.totalCacheHit)} | Miss: ${fmt(stats.totalCacheMiss)}`,
-                `• Efficiency: ${eff}% (${el.text})`,
+                `**缓存命中:**`,
+                `• 命中: ${fmt(stats.totalCacheHit)} | 未命中: ${fmt(stats.totalCacheMiss)}`,
+                `• 效率: ${eff}% (${el.text})`,
                 ``,
-                `**Performance:**`,
-                `• Avg throughput: ${tps} tok/s`,
-                `• Total generation time: ${(stats.totalDuration / 1000).toFixed(1)}s`,
+                `**性能:**`,
+                `• 平均速度: ${tps} tok/秒`,
+                `• 总生成时间: ${(stats.totalDuration / 1000).toFixed(1)}s`,
                 ``,
-                `**Cost:**`,
-                `• Session: ${fmtCost(stats.cost)}`,
-                `• Projected (+50): ${fmtCost(projectedCost(50))}`,
+                `**费用:**`,
+                `• 本次会话: ${fmtCost(stats.cost)}`,
+                `• 预计 (+50条): ${fmtCost(projectedCost(50))}`,
             ].join('\n');
 
             if (typeof ctx.sendSystemMessage === 'function') {
@@ -970,18 +973,18 @@ function registerSlashCommands() {
             } else {
                 try { toastr.info(msg.replace(/\*\*/g, ''), 'Token Stats', { timeOut: 8000 }); } catch { console.log(msg); }
             }
-        }, { description: 'Show token statistics summary' });
+        }, { description: '显示 token 统计摘要' });
 
         ctx.registerSlashCommand('token-reset', () => {
             resetStats();
             refresh();
-            const doneMsg = '✅ Token stats reset.';
+            const doneMsg = '✅ Token 统计已重置。';
             if (typeof ctx.sendSystemMessage === 'function') {
                 ctx.sendSystemMessage(doneMsg);
             } else {
                 try { toastr.success(doneMsg, 'Token Monitor'); } catch { console.log(doneMsg); }
             }
-        }, { description: 'Reset all token statistics' });
+        }, { description: '重置所有 token 统计' });
 
     } catch { /* STscript not available — non-critical */ }
 }
@@ -1002,8 +1005,8 @@ function init() {
     createUI();
     addSettingsButton();
     registerSlashCommands();
-    console.log('[TokenCacheMonitor v2] 🐋 Ready — CodeWhale-style token tracking active. '
-        + `Model: ${cfg.costModel}, Cache: ${cfg.showCacheInfo ? 'ON' : 'OFF'}, `
+    console.log('[TokenCacheMonitor v2] 🐋 已就绪 — Token 监控已激活。'
+        + `模型: ${cfg.costModel}, 缓存: ${cfg.showCacheInfo ? '开' : '关'}, `
         + `Session persisted: ${stats.requests > 0 ? stats.requests + ' reqs' : 'fresh'}`);
 }
 
