@@ -252,19 +252,26 @@ function hookEvents() {
     });
 
     // MESSAGE_RECEIVED: 最可靠的数据源，消息的 .usage 字段包含 API 完整返回
+    // 注意: 此事件在用户消息和 AI 消息时都会触发
     eventSource.on(event_types.MESSAGE_RECEIVED, async (data) => {
-        const duration = stats.genStartTime ? Date.now() - stats.genStartTime : 0;
+        if (!stats.genStartTime) return;  // 没有正在进行的 generation，跳过
 
         let usage = null;
 
-        // 数据源 1: 消息对象自带的 usage（最可靠，含缓存字段）
+        // 查找最后一条 AI 消息的 usage
         try {
             const ctx = getContext();
             const lastMsg = ctx?.chat?.[ctx.chat.length - 1];
-            if (lastMsg?.usage?.prompt_tokens !== undefined) {
+            // 必须是 AI 消息（非用户）且有 usage 数据
+            if (lastMsg && !lastMsg.is_user && lastMsg?.usage?.prompt_tokens !== undefined) {
                 usage = lastMsg.usage;
             }
         } catch { /* ignore */ }
+
+        // 没找到 AI usage → 用户消息或消息尚未附加 usage → 跳过，保留 genStartTime
+        if (!usage) return;
+
+        const duration = stats.genStartTime ? Date.now() - stats.genStartTime : 0;
 
         // 数据源 2: context.getChatCompletionUsage()（ST 1.12+ 新增 API）
         if (!usage) {
@@ -302,17 +309,6 @@ function hookEvents() {
                 : Math.max(0, pt - ch);
 
             record(pt, ct, ch, cm, duration);
-        } else if (stats.streamingCount > 0 && stats.lastCompletion === 0) {
-            const p = getPricing();
-            stats.lastCompletion = stats.streamingCount;
-            stats.totalCompletion += stats.streamingCount;
-            stats.lastTime = Date.now();
-            stats.lastDuration = duration;
-            stats.totalDuration += duration;
-            stats.requests++;
-            stats.cost += (stats.streamingCount / 1_000_000) * p.output;
-            stats.streamingCount = 0;
-            saveSession();
         }
 
         stats.streamingCount = 0;
