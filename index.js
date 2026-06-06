@@ -259,13 +259,16 @@ function hookEvents() {
         let usage = null;
 
         // 数据源 1: generateRawData() — 返回完整原始 API 响应，保留 DeepSeek 缓存字段
-        // ST 的 lastMessage.usage 可能被标准化过滤，丢失 prompt_cache_* 字段
         try {
             const ctx = getContext();
             if (typeof ctx.generateRawData === 'function') {
                 const raw = await ctx.generateRawData();
                 if (raw?.usage?.prompt_tokens !== undefined) {
                     usage = raw.usage;
+                    // 诊断: 打印完整 usage 对象（仅前 3 次请求）
+                    if (stats.requests < 3) {
+                        console.log('[Token监控] generateRawData usage', JSON.parse(JSON.stringify(usage)));
+                    }
                 }
             }
         } catch { /* ignore */ }
