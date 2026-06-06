@@ -267,18 +267,27 @@ function hookEvents() {
 
         let usage = null;
 
-        // 数据源 1: generateRawData() — 返回完整原始 API 响应，保留 DeepSeek 缓存字段
+        // 数据源 1: generateRawData()
         try {
             const ctx = getContext();
-            if (typeof ctx.generateRawData === 'function') {
-                const raw = await ctx.generateRawData();
-                if (raw?.usage?.prompt_tokens !== undefined) {
-                    usage = raw.usage;
-                    // 诊断: 始终打印本次 usage（每次都会更新请求计数）
-                    console.log('[Token监控] generateRawData usage', JSON.parse(JSON.stringify(usage)));
-                }
+            const hasFn = typeof ctx.generateRawData === 'function';
+            let raw = null;
+            if (hasFn) raw = await ctx.generateRawData();
+            const hasUsage = raw?.usage?.prompt_tokens !== undefined;
+            console.log('[Token监控] generateRawData', {
+                hasFn,
+                hasRaw: !!raw,
+                hasRawUsage: !!raw?.usage,
+                rawUsageKeys: raw?.usage ? Object.keys(raw.usage) : [],
+                hasPromptTokens: hasUsage,
+            });
+            if (hasUsage) {
+                usage = raw.usage;
+                console.log('[Token监控] usage完整', JSON.parse(JSON.stringify(usage)));
             }
-        } catch { /* ignore */ }
+        } catch (e) {
+            console.log('[Token监控] generateRawData error:', e.message || e);
+        }
 
         // 数据源 2: 消息对象自带的 usage（ST 标准化后可能丢失缓存字段，但 token 数准确）
         if (!usage) {
