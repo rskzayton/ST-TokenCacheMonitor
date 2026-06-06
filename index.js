@@ -253,7 +253,16 @@ function hookEvents() {
 
     // MESSAGE_RECEIVED: 最可靠的数据源，消息的 .usage 字段包含 API 完整返回
     // 注意: 此事件在用户消息和 AI 消息时都会触发
+    let _msgReceivedCount = 0;
     eventSource.on(event_types.MESSAGE_RECEIVED, async (data) => {
+        _msgReceivedCount++;
+        console.log(`[Token监控] MESSAGE_RECEIVED #${_msgReceivedCount}`, {
+            genStartTime: stats.genStartTime,
+            hasGenStart: !!stats.genStartTime,
+            streamingCount: stats.streamingCount,
+            requests: stats.requests,
+        });
+
         if (!stats.genStartTime) return;  // 没有正在进行的 generation，跳过
 
         let usage = null;
@@ -852,9 +861,11 @@ function init() {
     createUI();
     addSettingsButton();
     registerSlashCommands();
-    console.log('[TokenCacheMonitor v2] 🐋 已就绪 — Token 监控已激活。'
-        + `模型: ${cfg.costModel}, 缓存: ${cfg.showCacheInfo ? '开' : '关'}, `
-        + `Session persisted: ${stats.requests > 0 ? stats.requests + ' reqs' : 'fresh'}`);
+    console.log('[Token监控] 🐋 已就绪 v3.2.1'
+        + ` | 模型: ${cfg.costModel} | 缓存: ${cfg.showCacheInfo ? '开' : '关'}`
+        + ` | MESSAGE_RECEIVED: ${!!event_types.MESSAGE_RECEIVED}`
+        + ` | generateRawData: ${typeof getContext().generateRawData}`
+        + ` | 对话: ${_currentChatId || '(未初始化)'}`);
 }
 
 if (document.readyState === 'loading') {
