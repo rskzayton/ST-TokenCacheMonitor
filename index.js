@@ -258,42 +258,33 @@ function hookEvents() {
 
         let usage = null;
 
-        // 查找最后一条 AI 消息的 usage
+        // 数据源 1: generateRawData() — 返回完整原始 API 响应，保留 DeepSeek 缓存字段
+        // ST 的 lastMessage.usage 可能被标准化过滤，丢失 prompt_cache_* 字段
         try {
             const ctx = getContext();
-            const lastMsg = ctx?.chat?.[ctx.chat.length - 1];
-            // 必须是 AI 消息（非用户）且有 usage 数据
-            if (lastMsg && !lastMsg.is_user && lastMsg?.usage?.prompt_tokens !== undefined) {
-                usage = lastMsg.usage;
+            if (typeof ctx.generateRawData === 'function') {
+                const raw = await ctx.generateRawData();
+                if (raw?.usage?.prompt_tokens !== undefined) {
+                    usage = raw.usage;
+                }
             }
         } catch { /* ignore */ }
 
-        // 没找到 AI usage → 用户消息或消息尚未附加 usage → 跳过，保留 genStartTime
+        // 数据源 2: 消息对象自带的 usage（ST 标准化后可能丢失缓存字段，但 token 数准确）
+        if (!usage) {
+            try {
+                const ctx = getContext();
+                const lastMsg = ctx?.chat?.[ctx.chat.length - 1];
+                if (lastMsg && !lastMsg.is_user && lastMsg?.usage?.prompt_tokens !== undefined) {
+                    usage = lastMsg.usage;
+                }
+            } catch { /* ignore */ }
+        }
+
+        // 没找到 usage → 用户消息 → 跳过
         if (!usage) return;
 
         const duration = stats.genStartTime ? Date.now() - stats.genStartTime : 0;
-
-        // 数据源 2: context.getChatCompletionUsage()（ST 1.12+ 新增 API）
-        if (!usage) {
-            try {
-                const ctx = getContext();
-                if (typeof ctx.getChatCompletionUsage === 'function') {
-                    const u = await ctx.getChatCompletionUsage();
-                    if (u?.prompt_tokens !== undefined) usage = u;
-                }
-            } catch { /* ignore */ }
-        }
-
-        // 数据源 3: generateRawData() 回退
-        if (!usage) {
-            try {
-                const ctx = getContext();
-                if (typeof ctx.generateRawData === 'function') {
-                    const raw = await ctx.generateRawData();
-                    if (raw?.usage?.prompt_tokens !== undefined) usage = raw.usage;
-                }
-            } catch { /* ignore */ }
-        }
 
         if (usage) {
             const pt = usage.prompt_tokens || usage.input_tokens || 0;
