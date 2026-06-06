@@ -611,7 +611,7 @@ function position() {
 
 function bindUI() {
     $('#tcm-btn-toggle')?.addEventListener('click', toggle);
-    $('#tcm-btn-reset')?.addEventListener('click', () => { resetStats(); refresh(); });
+    $('#tcm-btn-reset')?.addEventListener('click', () => { resetStats(); clearSession(); refresh(); });
     $('#tcm-btn-close')?.addEventListener('click', () => {
         root.style.display = root.style.display === 'none' ? '' : 'none';
     });
@@ -680,7 +680,6 @@ function resetStats() {
     stats.streamingCount  = 0;
     stats.genStartTime    = 0;
     stats.history         = [];
-    clearSession();
 }
 
 function rebuild() {
@@ -822,6 +821,7 @@ function registerSlashCommands() {
 
         ctx.registerSlashCommand('token-reset', () => {
             resetStats();
+            clearSession();
             refresh();
             const doneMsg = '✅ Token 统计已重置。';
             if (typeof ctx.sendSystemMessage === 'function') {
