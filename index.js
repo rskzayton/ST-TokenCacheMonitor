@@ -274,10 +274,8 @@ function hookEvents() {
                 const raw = await ctx.generateRawData();
                 if (raw?.usage?.prompt_tokens !== undefined) {
                     usage = raw.usage;
-                    // 诊断: 打印完整 usage 对象（仅前 3 次请求）
-                    if (stats.requests < 3) {
-                        console.log('[Token监控] generateRawData usage', JSON.parse(JSON.stringify(usage)));
-                    }
+                    // 诊断: 始终打印本次 usage（每次都会更新请求计数）
+                    console.log('[Token监控] generateRawData usage', JSON.parse(JSON.stringify(usage)));
                 }
             }
         } catch { /* ignore */ }
