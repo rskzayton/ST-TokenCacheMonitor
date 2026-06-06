@@ -235,31 +235,142 @@ function record(prompt, completion, cacheHit, cacheMiss, durationMs) {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════════════════
-// ST Event hooks
+// fetch 拦截器 — 主数据源
+// 拦截 ST 内部代理 URL（/backends/chat-completions 等），读取 SSE 流累加 usage
+// 参考 st-token-checker 方案：正确的 URL 模式 + SSE 字段合并
+// ═══════════════════════════════════════════════════════════════════════════
+
+const GEN_RE = /\/(backends\/(chat|text)-completions|generate)/i;
+const _origFetch = window.fetch.bind(window);
+
+window.fetch = async function (...args) {
+    const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+    const isGen = GEN_RE.test(url);
+    let reqBody = null;
+    let startTs = 0;
+
+    if (isGen) {
+        startTs = performance.now();
+        try {
+            const init = args[1];
+            if (init && typeof init.body === 'string') reqBody = JSON.parse(init.body);
+        } catch {}
+    }
+
+    const response = await _origFetch(...args);
+
+    if (isGen && response.ok) {
+        const clone = response.clone();
+        const ct = (response.headers.get('content-type') || '').toLowerCase();
+        const isStream = ct.includes('event-stream') || ct.includes('stream');
+        handleGenResponse(clone, isStream, reqBody, startTs).catch(() => {});
+    }
+
+    return response;
+};
+
+// SSE 流累加 usage（兼容 OpenAI/DeepSeek/Claude）
+async function readSSEUsage(resp) {
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let usage = {};
+
+    const mergeUsage = (u) => {
+        if (!u) return;
+        for (const k of Object.keys(u)) {
+            const v = u[k];
+            if (typeof v === 'number' && v > 0) usage[k] = v;
+            else if (typeof v === 'object' && v) usage[k] = { ...(usage[k] || {}), ...v };
+        }
+    };
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+            const s = line.trim();
+            if (!s.startsWith('data:')) continue;
+            const payload = s.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            let obj;
+            try { obj = JSON.parse(payload); } catch { continue; }
+            mergeUsage(obj.usage);
+            mergeUsage(obj.message?.usage);
+            if (obj.choices?.[0]?.usage) mergeUsage(obj.choices[0].usage);
+        }
+    }
+    return Object.keys(usage).length ? usage : null;
+}
+
+// usage 归一化（统一 OpenAI / Claude / DeepSeek）
+function normalizeUsage(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const input = raw.prompt_tokens ?? raw.input_tokens ?? 0;
+    const output = raw.completion_tokens ?? raw.output_tokens ?? 0;
+    const cacheRead = raw.prompt_tokens_details?.cached_tokens  // OpenAI
+        ?? raw.cache_read_input_tokens                         // Claude
+        ?? raw.prompt_cache_hit_tokens                         // DeepSeek
+        ?? 0;
+    const cacheWrite = raw.cache_creation_input_tokens ?? 0;   // Claude
+
+    // Claude: input_tokens 不含缓存 tokens，需补回
+    let normIn = input;
+    if (raw.input_tokens != null && (raw.cache_read_input_tokens || raw.cache_creation_input_tokens)) {
+        normIn = input + cacheRead + cacheWrite;
+    }
+
+    if (!normIn && !output) return null;
+    return { input: normIn, output, cacheRead, cacheWrite, total: normIn + output };
+}
+
+async function handleGenResponse(resp, isStream, reqBody, startTs) {
+    let rawUsage = null;
+
+    if (isStream) {
+        rawUsage = await readSSEUsage(resp);
+    } else {
+        try {
+            const json = await resp.json();
+            rawUsage = json?.usage || json?.message?.usage || null;
+        } catch {}
+    }
+
+    const usage = normalizeUsage(rawUsage);
+    if (!usage || usage.total <= 0) return;
+
+    // 模型检测
+    let model = 'unknown';
+    try {
+        const ctx = getContext();
+        model = reqBody?.model || ctx?.chatMetadata?.model || 'unknown';
+    } catch {}
+
+    const elapsed = performance.now() - startTs;
+    const pt = usage.input;
+    const ct = usage.output;
+    const ch = usage.cacheRead;
+    const cm = usage.input - usage.cacheRead;
+    const duration = elapsed > 0 ? elapsed : (stats.genStartTime ? Date.now() - stats.genStartTime : 0);
+
+    record(pt, ct, ch, cm, duration);
+
+    stats.streamingCount = 0;
+    stats.genStartTime = 0;
+    refresh();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ST Event hooks（UI 流式指示器 + 兜底）
 // ═══════════════════════════════════════════════════════════════════════════
 
 function hookEvents() {
-    let roundNumber = 0;
-    let basePromptTokens = 0;
-    let accumulatedCacheHit = 0;
-    let accumulatedCacheMiss = 0;
-    let finalizeTimer = null;
-
     eventSource.on(event_types.GENERATION_STARTED, () => {
-        // 新轮次开始，取消上一轮的结束定时器
-        if (finalizeTimer) { clearTimeout(finalizeTimer); finalizeTimer = null; }
-
-        roundNumber++;
         stats.streamingCount = 0;
         stats.genStartTime = Date.now();
-
-        // 第 2 轮起清空 last 值准备累加（session 总计保持不变）
-        if (roundNumber >= 2) {
-            stats.lastCompletion = 0;
-            stats.lastCacheHit = 0;
-            stats.lastCacheMiss = 0;
-        }
-
         refresh();
     });
 
@@ -268,76 +379,6 @@ function hookEvents() {
         if (stats.streamingCount % 5 === 0) refresh();
     });
 
-    eventSource.on(event_types.MESSAGE_RECEIVED, async (data) => {
-        if (!stats.genStartTime) return;  // 非生成期间的消息，跳过
-        let usage = null;
-
-        // generateRawData() — 返回完整原始 API 响应，保留 DeepSeek 缓存字段
-        try {
-            const ctx = getContext();
-            if (typeof ctx.generateRawData === 'function') {
-                const raw = await ctx.generateRawData();
-                if (raw?.usage?.prompt_tokens !== undefined) usage = raw.usage;
-            }
-        } catch { /* ignore */ }
-
-        // 备用: 消息对象自带的 usage
-        if (!usage) {
-            try {
-                const ctx = getContext();
-                const lastMsg = ctx?.chat?.[ctx.chat.length - 1];
-                if (lastMsg && !lastMsg.is_user && lastMsg?.usage?.prompt_tokens !== undefined) {
-                    usage = lastMsg.usage;
-                }
-            } catch { /* ignore */ }
-        }
-
-        if (!usage) return;  // 用户消息或无数据，跳过
-
-        const duration = stats.genStartTime ? Date.now() - stats.genStartTime : 0;
-        const pt = usage.prompt_tokens || usage.input_tokens || 0;
-        const ct = usage.completion_tokens || usage.output_tokens || stats.streamingCount;
-        const ch = usage.prompt_cache_hit_tokens
-            || usage.cache_read_input_tokens
-            || (usage.prompt_tokens_details?.cached_tokens)
-            || 0;
-        const cm = usage.prompt_cache_miss_tokens !== undefined
-            ? usage.prompt_cache_miss_tokens
-            : Math.max(0, pt - ch);
-
-        // 第 1 轮保存 base prompt；后续轮仅累加 completion 和 cache
-        if (roundNumber === 1) {
-            basePromptTokens = pt;
-            stats.lastPrompt = pt;
-        }
-
-        // 跨轮累加缓存数据（rikkahub-style）
-        accumulatedCacheHit += ch;
-        accumulatedCacheMiss += cm;
-
-        // 通过 record 持久化当轮 completion（prompt 固定为第 1 轮的值）
-        const effectivePt = basePromptTokens || pt;
-        const effectiveCt = (roundNumber === 1) ? ct : (stats.accumulatedCompletionTokens || 0) + ct;
-        // 跟踪累计 completion
-        if (!stats.accumulatedCompletionTokens) stats.accumulatedCompletionTokens = 0;
-        stats.accumulatedCompletionTokens += ct;
-
-        record(effectivePt, effectiveCt, accumulatedCacheHit, accumulatedCacheMiss, duration);
-
-        // 多轮检测: 3 秒内无新轮次视为完成
-        if (finalizeTimer) clearTimeout(finalizeTimer);
-        finalizeTimer = setTimeout(() => {
-            roundNumber = 0;
-            basePromptTokens = 0;
-            accumulatedCacheHit = 0;
-            accumulatedCacheMiss = 0;
-            stats.accumulatedCompletionTokens = 0;
-        }, 3000);
-
-        stats.streamingCount = 0;
-        stats.genStartTime = 0;
-        refresh();
-    });
 
     // 切换对话时：保存当前对话数据 → 加载新对话数据
     eventSource.on(event_types.CHAT_CHANGED, () => {
