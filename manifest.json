@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "rskzayton",
-    "version": "3.2.1",
+    "version": "3.3.0",
     "homePage": "https://github.com/rskzayton/ST-TokenCacheMonitor",
     "auto_update": true,
     "description": "SillyTavern Token 监控面板：generateRawData() 优先获取完整缓存数据、人民币计价、MESSAGE_RECEIVED 事件驱动、中文界面、每对话独立存储。支持 DeepSeek/Claude/GPT。"

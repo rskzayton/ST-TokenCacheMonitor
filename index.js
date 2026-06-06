@@ -239,57 +239,49 @@ function record(prompt, completion, cacheHit, cacheMiss, durationMs) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function hookEvents() {
+    let roundNumber = 0;
+    let basePromptTokens = 0;
+    let accumulatedCacheHit = 0;
+    let accumulatedCacheMiss = 0;
+    let finalizeTimer = null;
+
     eventSource.on(event_types.GENERATION_STARTED, () => {
+        // 新轮次开始，取消上一轮的结束定时器
+        if (finalizeTimer) { clearTimeout(finalizeTimer); finalizeTimer = null; }
+
+        roundNumber++;
         stats.streamingCount = 0;
         stats.genStartTime = Date.now();
+
+        // 第 2 轮起清空 last 值准备累加（session 总计保持不变）
+        if (roundNumber >= 2) {
+            stats.lastCompletion = 0;
+            stats.lastCacheHit = 0;
+            stats.lastCacheMiss = 0;
+        }
+
         refresh();
     });
 
     eventSource.on(event_types.STREAM_TOKEN_RECEIVED, () => {
         stats.streamingCount++;
-        // Throttle UI updates during fast streaming
         if (stats.streamingCount % 5 === 0) refresh();
     });
 
-    // MESSAGE_RECEIVED: 最可靠的数据源，消息的 .usage 字段包含 API 完整返回
-    // 注意: 此事件在用户消息和 AI 消息时都会触发
-    let _msgReceivedCount = 0;
     eventSource.on(event_types.MESSAGE_RECEIVED, async (data) => {
-        _msgReceivedCount++;
-        console.log(`[Token监控] MESSAGE_RECEIVED #${_msgReceivedCount}`, {
-            genStartTime: stats.genStartTime,
-            hasGenStart: !!stats.genStartTime,
-            streamingCount: stats.streamingCount,
-            requests: stats.requests,
-        });
-
-        if (!stats.genStartTime) return;  // 没有正在进行的 generation，跳过
-
+        if (!stats.genStartTime) return;  // 非生成期间的消息，跳过
         let usage = null;
 
-        // 数据源 1: generateRawData()
+        // generateRawData() — 返回完整原始 API 响应，保留 DeepSeek 缓存字段
         try {
             const ctx = getContext();
-            const hasFn = typeof ctx.generateRawData === 'function';
-            let raw = null;
-            if (hasFn) raw = await ctx.generateRawData();
-            const hasUsage = raw?.usage?.prompt_tokens !== undefined;
-            console.log('[Token监控] generateRawData', {
-                hasFn,
-                hasRaw: !!raw,
-                hasRawUsage: !!raw?.usage,
-                rawUsageKeys: raw?.usage ? Object.keys(raw.usage) : [],
-                hasPromptTokens: hasUsage,
-            });
-            if (hasUsage) {
-                usage = raw.usage;
-                console.log('[Token监控] usage完整', JSON.parse(JSON.stringify(usage)));
+            if (typeof ctx.generateRawData === 'function') {
+                const raw = await ctx.generateRawData();
+                if (raw?.usage?.prompt_tokens !== undefined) usage = raw.usage;
             }
-        } catch (e) {
-            console.log('[Token监控] generateRawData error:', e.message || e);
-        }
+        } catch { /* ignore */ }
 
-        // 数据源 2: 消息对象自带的 usage（ST 标准化后可能丢失缓存字段，但 token 数准确）
+        // 备用: 消息对象自带的 usage
         if (!usage) {
             try {
                 const ctx = getContext();
@@ -300,26 +292,47 @@ function hookEvents() {
             } catch { /* ignore */ }
         }
 
-        // 没找到 usage → 用户消息 → 跳过
-        if (!usage) return;
+        if (!usage) return;  // 用户消息或无数据，跳过
 
         const duration = stats.genStartTime ? Date.now() - stats.genStartTime : 0;
+        const pt = usage.prompt_tokens || usage.input_tokens || 0;
+        const ct = usage.completion_tokens || usage.output_tokens || stats.streamingCount;
+        const ch = usage.prompt_cache_hit_tokens
+            || usage.cache_read_input_tokens
+            || (usage.prompt_tokens_details?.cached_tokens)
+            || 0;
+        const cm = usage.prompt_cache_miss_tokens !== undefined
+            ? usage.prompt_cache_miss_tokens
+            : Math.max(0, pt - ch);
 
-        if (usage) {
-            const pt = usage.prompt_tokens || usage.input_tokens || 0;
-            const ct = usage.completion_tokens || usage.output_tokens || stats.streamingCount;
-
-            // 支持 DeepSeek / Anthropic / OpenAI 三种缓存字段
-            const ch = usage.prompt_cache_hit_tokens
-                || usage.cache_read_input_tokens
-                || (usage.prompt_tokens_details?.cached_tokens)
-                || 0;
-            const cm = usage.prompt_cache_miss_tokens !== undefined
-                ? usage.prompt_cache_miss_tokens
-                : Math.max(0, pt - ch);
-
-            record(pt, ct, ch, cm, duration);
+        // 第 1 轮保存 base prompt；后续轮仅累加 completion 和 cache
+        if (roundNumber === 1) {
+            basePromptTokens = pt;
+            stats.lastPrompt = pt;
         }
+
+        // 跨轮累加缓存数据（rikkahub-style）
+        accumulatedCacheHit += ch;
+        accumulatedCacheMiss += cm;
+
+        // 通过 record 持久化当轮 completion（prompt 固定为第 1 轮的值）
+        const effectivePt = basePromptTokens || pt;
+        const effectiveCt = (roundNumber === 1) ? ct : (stats.accumulatedCompletionTokens || 0) + ct;
+        // 跟踪累计 completion
+        if (!stats.accumulatedCompletionTokens) stats.accumulatedCompletionTokens = 0;
+        stats.accumulatedCompletionTokens += ct;
+
+        record(effectivePt, effectiveCt, accumulatedCacheHit, accumulatedCacheMiss, duration);
+
+        // 多轮检测: 3 秒内无新轮次视为完成
+        if (finalizeTimer) clearTimeout(finalizeTimer);
+        finalizeTimer = setTimeout(() => {
+            roundNumber = 0;
+            basePromptTokens = 0;
+            accumulatedCacheHit = 0;
+            accumulatedCacheMiss = 0;
+            stats.accumulatedCompletionTokens = 0;
+        }, 3000);
 
         stats.streamingCount = 0;
         stats.genStartTime = 0;
@@ -868,11 +881,7 @@ function init() {
     createUI();
     addSettingsButton();
     registerSlashCommands();
-    console.log('[Token监控] 🐋 已就绪 v3.2.1'
-        + ` | 模型: ${cfg.costModel} | 缓存: ${cfg.showCacheInfo ? '开' : '关'}`
-        + ` | MESSAGE_RECEIVED: ${!!event_types.MESSAGE_RECEIVED}`
-        + ` | generateRawData: ${typeof getContext().generateRawData}`
-        + ` | 对话: ${_currentChatId || '(未初始化)'}`);
+    console.log('[Token监控] 🐋 已就绪 | 模型: ' + cfg.costModel + ' | 缓存: ' + (cfg.showCacheInfo ? '开' : '关'));
 }
 
 if (document.readyState === 'loading') {
